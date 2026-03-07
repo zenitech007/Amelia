@@ -77,7 +77,7 @@ export default function LoginPage() {
           <Activity size={32} className="text-white" />
         </div>
         <h2 className="text-3xl font-extrabold text-gray-900 dark:text-white tracking-tight">
-          Amelia Health
+          Amelia MedTech
         </h2>
         <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
           Your personal AI medical assistant
