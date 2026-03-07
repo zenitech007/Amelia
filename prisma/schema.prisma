@@ -1,0 +1,142 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+//////////////////////////////////////////////////
+// 1. USER ACCOUNT (linked to Supabase Auth)
+//////////////////////////////////////////////////
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  createdAt     DateTime @default(now())
+
+  profile       PatientProfile?
+  chats         Chat[]
+  dailyLogs     DailyLog[]
+  reports       HealthReport[]
+}
+
+//////////////////////////////////////////////////
+// 2. PATIENT IDENTITY PROFILE
+//////////////////////////////////////////////////
+
+model PatientProfile {
+  id             String   @id @default(uuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id])
+
+  firstName      String
+  lastName       String
+  age            Int?
+  gender         String?
+  weightKg       Float?
+  heightCm       Float?
+  bloodType      String?
+  bodyShape      String?
+  genotype       String?
+  sugarLevel     String?
+  isPregnant     Boolean @default(false)
+  allergies      String?
+  conditions     String?
+  currentMeds    String?
+  language       String? @default("English")
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  records        PatientRecord[]
+}
+
+//////////////////////////////////////////////////
+// 3. MEDICAL CONVERSATIONS
+//////////////////////////////////////////////////
+
+model Chat {
+  id             String         @id @default(cuid())
+  title          String
+  isPinned       Boolean        @default(false)
+  createdAt      DateTime       @default(now())
+
+  // Securely owned by the authenticated User
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+
+  messages       Message[]
+}
+
+//////////////////////////////////////////////////
+// 4. AI CHAT HISTORY
+//////////////////////////////////////////////////
+
+model Message {
+  id        String   @id @default(cuid())
+
+  role      String   // "user" | "assistant" | "system"
+  content   String
+
+  createdAt DateTime @default(now())
+
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+}
+
+//////////////////////////////////////////////////
+// 5. HEALTH REPORTS (AI GENERATED ANALYSIS)
+//////////////////////////////////////////////////
+
+model HealthReport {
+  id           String   @id @default(uuid())
+
+  title        String
+  summary      String
+  riskLevel    String?  // Low | Medium | High
+
+  recommendations String?
+
+  createdAt    DateTime @default(now())
+
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+}
+
+//////////////////////////////////////////////////
+// 6. PATIENT MEDICAL RECORDS
+//////////////////////////////////////////////////
+
+model PatientRecord {
+  id              String   @id @default(uuid())
+
+  recordType      String   // Lab | Diagnosis | Prescription | Visit
+  title           String
+  description     String?
+
+  doctorName      String?
+  hospital        String?
+
+  recordDate      DateTime
+  createdAt       DateTime @default(now())
+
+  patientProfileId String
+  patientProfile   PatientProfile @relation(fields: [patientProfileId], references: [id])
+}
+
+// --- DAILY VITALS TRACKING ---
+model DailyLog {
+  id          String   @id @default(uuid())
+  userId      String
+  dateString  String   // Format: YYYY-MM-DD so we only get one log per day
+  waterLiters Float    @default(0)
+  steps       Int      @default(0)
+  medsTaken   Boolean  @default(false)
+  notes       String?
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // This guarantees a user can only have ONE log per calendar day
+  @@unique([userId, dateString])
+}
