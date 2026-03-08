@@ -17,6 +17,8 @@ import NurseAvatar from '../components/NurseAvatar';
 import HealthDashboard from '../components/HealthDashboard';
 import AmeliaAlert, { AlertData } from '../components/AmeliaAlert';
 
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 export default function Home() {
   const router = useRouter();
   const supabase = createClient();
@@ -196,18 +198,19 @@ export default function Home() {
     let activeChatId = currentChatId;
 
     try {
-      if (!activeChatId) {
-        const title = userText.length > 30 ? userText.substring(0, 30) + '...' : userText;
-        const res = await fetch('/api/chats', {
-          method: 'POST',
-          body: JSON.stringify({ 
-            title, 
-            firstMessage: userText, 
-            role: USER,
-            userId: user.id, 
-            email: user.email 
-          })
-        });
+  if (!activeChatId) {
+    const title = userText.length > 30 ? userText.substring(0, 30) + '...' : userText;
+    
+    const res = await fetch(`${API_BASE_URL}/api/chats`, { 
+      method: 'POST',
+      body: JSON.stringify({ 
+        title, 
+        firstMessage: userText, 
+        role: 'user', // Ensure this matches your USER constant
+        userId: user.id, 
+        email: user.email 
+      })
+    });
         const newChat = await res.json();
         activeChatId = newChat.id;
         setCurrentChatId(activeChatId);
