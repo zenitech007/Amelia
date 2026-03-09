@@ -1,53 +1,62 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '../../../lib/prisma';
 
-// GET all chats for the logged-in user
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  const userId = searchParams.get('userId');
+  try {
+    const { searchParams } = new URL(req.url);
+    const userId = searchParams.get('userId');
 
-  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!userId) {
+      return NextResponse.json({ error: 'UserId is required' }, { status: 400 });
+    }
 
-  const chats = await prisma.chat.findMany({
-    where: { userId: userId },
-    orderBy: { createdAt: 'desc' },
-  });
-  return NextResponse.json(chats);
+    const chats = await prisma.chat.findMany({
+      where: { userId: userId },
+      orderBy: { createdAt: 'desc' },
+    });
+    
+    return NextResponse.json(chats);
+  } catch (error) {
+    console.error("GET CHATS ERROR:", error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  }
 }
 
-// POST a new chat linked to the user
 export async function POST(req: Request) {
-  const { title, firstMessage, role, userId, email } = await req.json();
-  
-  // 1. Ensure the user exists in our public User table (Syncs with Supabase Auth)
-  const user = await prisma.user.upsert({
-    where: { id: userId },
-    update: {},
-    create: { id: userId, email: email || 'unknown@email.com' }
-  });
+  try {
+    const body = await req.json();
+    const { title, firstMessage, role, userId, email } = body;
 
-  // 2. Create the chat and link it to their User ID
-  const chat = await prisma.chat.create({
-    data: {
-      title,
-      userId: user.id,
-      messages: {
-        create: { role, content: firstMessage }
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID is missing' }, { status: 400 });
+    }
+
+    // 1. Ensure the user exists (Upsert)
+    const user = await prisma.user.upsert({
+      where: { id: userId },
+      update: {},
+      create: { 
+        id: userId, 
+        email: email || 'unknown@email.com' 
       }
-    },
-    include: { messages: true }
-  });
-  
-  return NextResponse.json(chat);
-}
+    });
 
-// PUT (Update) a chat with a new message
-export async function PUT(req: Request) {
-  const { chatId, role, content } = await req.json();
-  
-  const message = await prisma.message.create({
-    data: { chatId, role, content }
-  });
-  
-  return NextResponse.json(message);
+    // 2. Create the chat
+    const chat = await prisma.chat.create({
+      data: {
+        title,
+        userId: user.id,
+        messages: {
+          create: { role, content: firstMessage }
+        }
+      },
+      include: { messages: true }
+    });
+    
+    return NextResponse.json(chat);
+  } catch (error) {
+    console.error("POST CHAT ERROR:", error);
+    // This will show exactly why it failed in your Railway logs
+    return NextResponse.json({ error: 'Failed to create chat' }, { status: 500 });
+  }
 }
