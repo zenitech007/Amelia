@@ -42,6 +42,7 @@ export default function ChatInput({
   };
 
   const clearImage = () => {
+    if (imageFile) URL.revokeObjectURL(imageFile as unknown as string); // release memory
     setImageFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -102,18 +103,24 @@ export default function ChatInput({
         
         {/* --- IMAGE PREVIEW BUBBLE --- */}
         {imageFile && (
-          <div className="absolute bottom-[105%] left-0 mb-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
-            <div className="relative inline-block rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-md bg-white dark:bg-gray-800 p-1.5">
-              <img 
-                src={URL.createObjectURL(imageFile)} 
-                alt="Upload preview" 
-                className="h-20 w-auto object-cover rounded-lg"
+          <div className="absolute -top-28 left-4 z-50 animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <div className="relative w-36 h-28 rounded-xl overflow-hidden shadow-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700">
+              
+              {/* Image */}
+              <img
+                src={URL.createObjectURL(imageFile)}
+                alt="Upload preview"
+                className="w-full h-full object-cover hover:opacity-90 transition-opacity cursor-pointer"
               />
-              <button 
-                onClick={clearImage}
-                className="absolute -top-2 -right-2 bg-gray-800 dark:bg-gray-600 text-white rounded-full p-1 hover:bg-gray-700 transition-colors shadow-lg"
+
+              {/* Cancel Button */}
+              <button
+                onClick={() => {
+                  clearImage();
+                }}
+                className="absolute top-1 right-1 bg-gray-800 dark:bg-gray-600 hover:bg-gray-700 text-white rounded-full p-1 shadow-md transition-colors"
               >
-                <X size={14} />
+                <X size={16} />
               </button>
             </div>
           </div>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Settings, Menu, Activity } from 'lucide-react';
+import { Settings, Menu, Activity, Pill, Bell, X } from 'lucide-react'; // <-- ADDED PILL, BELL, X ICONS
 
 import { Message, USER, AMELIA } from '../lib/types';
 import { THEMES } from '../lib/themes';
@@ -15,9 +15,22 @@ import SettingsModal from '../components/SettingsModal';
 import TypingIndicator from '../components/TypingIndicator';
 import NurseAvatar from '../components/NurseAvatar';
 import HealthDashboard from '../components/HealthDashboard';
+import MedicationSchedule from '../components/MedicationSchedule';
 import AmeliaAlert, { AlertData } from '../components/AmeliaAlert';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// --- HELPER: VAPID Key Converter for Push Notifications ---
+const urlBase64ToUint8Array = (base64String: string) => {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+};
 
 export default function Home() {
   const router = useRouter();
@@ -38,12 +51,35 @@ export default function Home() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
 
-  // --- PHASE 3: DASHBOARD & ALERTS STATE ---
+  // --- PHASE 3: DASHBOARD, ALERTS & MEDS STATE ---
   const [isDashboardOpen, setIsDashboardOpen] = useState(false);
   const [alertData, setAlertData] = useState<AlertData | null>(null);
+  
+  // ---> NEW: MEDICATION TRACKER STATE <---
+  const [activeMeds, setActiveMeds] = useState<any[]>([]);
+  const [isMedsOpen, setIsMedsOpen] = useState(false);
+
+  // ---> NEW: MEMORY CONTEXT STATE <---
+  const [memoryContext, setMemoryContext] = useState<string[]>([]);
 
   const triggerAlert = (message: string, type: 'success' | 'warning' | 'info' | 'reminder') => {
     setAlertData({ id: Date.now().toString(), type, message });
+  };
+
+  const fetchUserMemory = async (userId: string) => {
+    try {
+      const res = await fetch(`/api/memory?userId=${userId}&limit=50`);
+      if (!res.ok) return;
+
+      const data = await res.json();
+
+      if (Array.isArray(data)) {
+        const formatted = data.map((m: any) => m.observation);
+        setMemoryContext(formatted);
+      }
+    } catch (err) {
+      console.error("Failed to load memory:", err);
+    }
   };
 
   // --- DATABASE STATE ---
@@ -84,6 +120,20 @@ export default function Home() {
         setUser(session.user);
         setPatientProfile(profile);
         fetchSidebarChats(session.user.id);
+        
+        // ---> NEW: LOAD SAVED MEDICATIONS <---
+        try {
+          const medsRes = await fetch('/api/medications', {
+            headers: { 'Authorization': `Bearer ${session.access_token}` }
+          });
+          if (medsRes.ok) {
+            const savedMeds = await medsRes.json();
+            setActiveMeds(savedMeds);
+          }
+        } catch (error) {
+          console.error("Failed to load medications:", error);
+        }
+        
         setIsAuthChecking(false);
       }
     };
@@ -97,6 +147,47 @@ export default function Home() {
 
     return () => subscription.unsubscribe();
   }, [router, supabase]);
+
+  // ---> NEW: PUSH NOTIFICATION HANDSHAKE <---
+  const enableNotifications = async () => {
+    try {
+      // ---> NEW SAFETY CHECK <---
+      const vapidKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapidKey) {
+        triggerAlert("Notification keys are not configured on the server.", "warning");
+        console.error("Missing NEXT_PUBLIC_VAPID_PUBLIC_KEY in environment variables.");
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error("Permission denied by user");
+
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.ready;
+      
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        // Uses the safely checked variable here
+        applicationServerKey: urlBase64ToUint8Array(vapidKey)
+      });
+
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      const res = await fetch('/api/notifications/subscribe', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}` 
+        },
+        body: JSON.stringify(subscription)
+      });
+
+      if (res.ok) triggerAlert("Notifications synced with Amelia!", "success");
+    } catch (err) {
+      console.error("Sync failed:", err);
+      triggerAlert("Could not sync notifications. Please check browser permissions.", "warning");
+    }
+  };
 
   // --- 2. LOAD ALL PRIVATE CHATS ---
   const fetchSidebarChats = (userId: string) => {
@@ -117,18 +208,21 @@ export default function Home() {
   // --- 4. OPEN AN EXISTING CHAT ---
   const handleSelectChat = async (id: string) => {
     setCurrentChatId(id);
-    setIsSidebarOpen(false); 
-    
+    setIsSidebarOpen(false);
+
     try {
       const res = await fetch(`/api/chats/${id}`);
       if (res.ok) {
         const data = await res.json();
-        if (data && data.messages) {
+        if (data?.messages) {
           setMessages(data.messages);
         }
-      } else {
-        console.error("Failed to load chat history from the database.");
       }
+
+      if (user) {
+        await fetchUserMemory(user.id);
+      }
+
     } catch (error) {
       console.error("Network error while loading chat:", error);
     }
@@ -171,9 +265,19 @@ export default function Home() {
   const sendMessage = async () => {
     if ((!inputText.trim() && !imageFile) || !user) return; 
 
-    const userText = inputText.trim() || "Uploaded an image"; 
+    // --- NEW: 24-HOUR GREETING LOGIC ---
+    const now = Date.now();
+    const lastActive = localStorage.getItem('amelia_last_active');
+    const twentyFourHours = 24 * 60 * 60 * 1000;
     
+    // If it's the first time or more than 24 hours, trigger a greeting
+    const shouldGreet = !lastActive || (now - parseInt(lastActive)) > twentyFourHours;
+    localStorage.setItem('amelia_last_active', now.toString());
+    // ----------------------------------
+
+    const userText = inputText.trim() || "Uploaded an image"; 
     let base64Image = null;
+
     if (imageFile) {
       base64Image = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -188,85 +292,145 @@ export default function Home() {
       content: imageFile ? `[Image Attached] ${userText}` : userText,
       imageUrl: base64Image || undefined
     };
-    
-    setMessages((prev) => [...prev, userMessage]);
-    
-    setInputText(''); 
-    setImageFile(null); 
-    setIsLoading(true); 
+
+    // 1. Preserve previous messages and append user message
+    setMessages(prev => [...prev, userMessage]);
+    setInputText('');
+    setImageFile(null);
+    setIsLoading(true);
 
     let activeChatId = currentChatId;
 
     try {
-  if (!activeChatId) {
-    const title = userText.length > 30 ? userText.substring(0, 30) + '...' : userText;
-    
-    const res = await fetch(`${API_BASE_URL}/api/chats`, { 
-      method: 'POST',
-      body: JSON.stringify({ 
-        title, 
-        firstMessage: userText, 
-        role: 'user', // Ensure this matches your USER constant
-        userId: user.id, 
-        email: user.email 
-      })
-    });
+      // 2. Fetch Session Token ONCE outside the loops
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+
+      // 3. Handle Chat Persistence
+      if (!activeChatId) {
+        const title = userText.length > 30 ? userText.substring(0, 30) + '...' : userText;
+        const res = await fetch('/api/chats', { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            title, 
+            firstMessage: userText, 
+            role: 'user', 
+            userId: user.id, 
+            email: user.email 
+          })
+        });
         const newChat = await res.json();
-        activeChatId = newChat.id;
+        activeChatId = newChat.chat?.id || null;
         setCurrentChatId(activeChatId);
         fetchSidebarChats(user.id);
       } else {
         await fetch('/api/chats', {
           method: 'PUT',
-          body: JSON.stringify({ chatId: activeChatId, role: USER, content: userMessage.content })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chatId: activeChatId,
+            role: USER,
+            content: userMessage.content,
+            imageUrl: base64Image,
+            userId: user.id
+          })
         });
       }
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-      
-      const response = await fetch(`${apiUrl}/chat`, { 
+      // 4. Call Backend to stream AI response
+      const response = await fetch(`${API_BASE_URL}/chat`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_message: userText,
           session_id: activeChatId,
+          user_id: user.id,
           profile: patientProfile || {},
-          image_data: base64Image
+          image_data: base64Image,
+          history: messages.slice(-10),
+          memory: memoryContext,
+          // Pass the new flag to the backend
+          is_new_session: shouldGreet 
         })
       });
-      
-      setIsLoading(false); 
-      let ameliaText = "";
-      setMessages((prev) => [...prev, { role: AMELIA, content: ameliaText }]);
+
+      if (!response.ok) throw new Error("Backend failed");
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
+      let ameliaRawText = "";
 
       if (reader) {
+        // Prepare a slot for Amelia's response
+        setMessages(prev => [...prev, { role: AMELIA, content: "" }]);
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
           const chunk = decoder.decode(value, { stream: true });
-          ameliaText += chunk;
+          ameliaRawText += chunk;
+
+          // --- MEDICATION EXTRACTOR LISTENER ---
+          const medRegex = /\[AMELIA_NEW_MED:\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^\]]+?)\]/g;
+          let match;
+          while ((match = medRegex.exec(ameliaRawText)) !== null) {
+            const newMed = { 
+              name: match[1].trim(), 
+              dosage: match[2].trim(), 
+              frequency: match[3].trim(), 
+              instructions: match[4].trim() 
+            };
+            
+            // Check for duplicates in UI state first
+            setActiveMeds(prev => {
+              if (prev.find(m => m.name === newMed.name)) return prev;
+              
+              // 5. Save to DB asynchronously (Token is now readily available)
+              if (token) {
+                fetch('/api/medications', {
+                  method: 'POST',
+                  headers: { 
+                    'Content-Type': 'application/json', 
+                    'Authorization': `Bearer ${token}` 
+                  },
+                  body: JSON.stringify(newMed)
+                }).then(res => {
+                    if (res.ok) triggerAlert(`Added ${newMed.name} to schedule!`, "success");
+                });
+              }
+
+              return [...prev, newMed];
+            });
+          }
+
+          // Clean tags for display
+          const displayContent = ameliaRawText.replace(/\[AMELIA_NEW_MED:.*?\]/g, '').trim();
 
           setMessages((prev) => {
             const updated = [...prev];
-            updated[updated.length - 1] = { role: AMELIA, content: ameliaText };
+            updated[updated.length - 1] = { role: AMELIA, content: displayContent };
             return updated;
           });
         }
       }
 
+      // 6. Save final AI message to DB
+      const finalCleanText = ameliaRawText.replace(/\[AMELIA_NEW_MED:.*?\]/g, '').trim();
       await fetch('/api/chats', {
         method: 'PUT',
-        body: JSON.stringify({ chatId: activeChatId, role: AMELIA, content: ameliaText })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId: activeChatId, role: AMELIA, content: finalCleanText, userId: user.id })
       });
 
-    } catch (error) {
       setIsLoading(false);
-      setMessages((prev) => [...prev, { role: AMELIA, content: "I'm sorry, I am having trouble connecting right now." }]);
-    } 
+
+    } catch (error) {
+      console.error("Error sending message:", error);
+      setIsLoading(false);
+      setMessages(prev => [...prev, { role: AMELIA, content: "I'm sorry, I am having trouble connecting right now." }]);
+    }
   };
 
   if (isAuthChecking) {
@@ -313,8 +477,25 @@ export default function Home() {
             <span className="font-semibold text-lg tracking-wide text-gray-800 dark:text-gray-200">Amelia</span>
           </div>
           
-          {/* UPDATED HEADER BUTTONS: Dashboard + Settings */}
+          {/* UPDATED HEADER BUTTONS: Meds + Alerts + Dashboard + Settings */}
           <div className="flex items-center gap-1">
+            <button 
+              onClick={enableNotifications} 
+              className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              title="Enable Push Alerts"
+            >
+              <Bell size={20} className="text-gray-600 dark:text-gray-400" />
+            </button>
+            <button 
+              onClick={() => setIsMedsOpen(true)} 
+              className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors relative"
+              title="Medication Schedule"
+            >
+              <Pill size={20} className="text-gray-600 dark:text-gray-400" />
+              {activeMeds.length > 0 && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-pink-500 rounded-full animate-ping"></span>
+              )}
+            </button>
             <button 
               onClick={() => setIsDashboardOpen(true)} 
               className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
@@ -389,6 +570,24 @@ export default function Home() {
         activeTheme={activeTheme}
         triggerAlert={triggerAlert}
       />
+
+      {/* ---> NEW: MEDICATION SCHEDULE MODAL WIDGET <--- */}
+      {isMedsOpen && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in">
+           <div className="w-full max-w-md m-4 relative">
+              {/* Close Button positioned right outside the new component */}
+              <button 
+                onClick={() => setIsMedsOpen(false)} 
+                className="absolute top-4 right-4 z-10 text-gray-400 hover:text-[#FC94AF] transition-colors"
+              >
+                <X size={24} />
+              </button>
+              
+              {/* Your clean, imported component */}
+              <MedicationSchedule medications={activeMeds} />
+           </div>
+        </div>
+      )}
       
     </div>
   );

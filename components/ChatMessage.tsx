@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
-import { User, Image as ImageIcon, Volume2, Square } from 'lucide-react';
+import { User, Image as ImageIcon, Volume2, Square, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Message, USER, Theme } from '../lib/types';
 import NurseAvatar from './NurseAvatar';
+import remarkGfm from "remark-gfm";
 
 interface Props {
   msg: Message;
@@ -12,13 +13,13 @@ interface Props {
 export default function ChatMessage({ msg, activeTheme }: Props) {
   const isUser = msg.role === USER;
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isCopied, setIsCopied] = useState(false);
 
   const hasImageText = msg.content.startsWith('[Image Attached]');
   const displayText = hasImageText ? msg.content.replace('[Image Attached]', '').trim() : msg.content;
 
   // --- WARM UP THE VOICE ENGINE ---
   useEffect(() => {
-    // Browsers often load voices too slowly. This forces them to load in the background immediately!
     const loadVoices = () => window.speechSynthesis.getVoices();
     loadVoices(); 
     
@@ -27,9 +28,21 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
     }
 
     return () => {
-      window.speechSynthesis.cancel(); // Stop talking if we leave the page
+      window.speechSynthesis.cancel();
     };
   }, []);
+
+  // --- COPY TO CLIPBOARD ENGINE ---
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(displayText);
+      setIsCopied(true);
+      // Revert the icon back to 'Copy' after 2 seconds
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
 
   // --- THE TEXT-TO-SPEECH ENGINE ---
   const toggleSpeech = () => {
@@ -44,23 +57,22 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
       return;
     }
 
-    const cleanText = displayText.replace(/[*#_`]/g, '');
+    const cleanText = displayText
+    .replace(/[#_*`>-]/g, '')
+    .replace(/\n+/g, ' ');
     const utterance = new SpeechSynthesisUtterance(cleanText);
 
-    // --- THE ULTIMATE FEMALE VOICE FINDER ---
     const voices = window.speechSynthesis.getVoices();
     
-    // A master list of known female voices across Windows, Mac, Android, and iOS
     const preferredFemaleNames = [
-      'Google UK English Female', 'Google US English', // Android / Chrome
-      'Samantha', 'Victoria', 'Karen', 'Tessa', 'Melina', // Apple / macOS / iOS
-      'Zira', 'Hazel', 'Catherine', // Windows
-      'Fiona', 'Moira', 'Veena' // Other regional English female voices
+      'Google UK English Female', 'Google US English', 
+      'Samantha', 'Victoria', 'Karen', 'Tessa', 'Melina', 
+      'Zira', 'Hazel', 'Catherine', 
+      'Fiona', 'Moira', 'Veena' 
     ];
 
     let selectedVoice = null;
 
-    // 1. Try to find an exact match from our master list
     for (const name of preferredFemaleNames) {
       const found = voices.find(v => v.name.includes(name));
       if (found) {
@@ -69,17 +81,14 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
       }
     }
 
-    // 2. Fallback: If none of those exact names exist, grab ANY voice with the word 'Female'
     if (!selectedVoice) {
       selectedVoice = voices.find(v => /female|girl/i.test(v.name));
     }
 
-    // Apply the voice if we found one!
     if (selectedVoice) {
       utterance.voice = selectedVoice;
     }
 
-    // Tune the voice to sound like a calm nurse
     utterance.rate = 0.95; 
     utterance.pitch = 1.1;
 
@@ -115,6 +124,16 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
             {isUser ? 'You' : 'Amelia'}
           </span>
           
+          {/* COPY BUTTON */}
+          <button 
+            onClick={handleCopy}
+            className="p-1 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            title={isCopied ? "Copied!" : "Copy message"}
+          >
+            {isCopied ? <Check size={14} className="text-green-500 dark:text-green-400" /> : <Copy size={14} />}
+          </button>
+
+          {/* TEXT-TO-SPEECH BUTTON */}
           {!isUser && (
             <button 
               onClick={toggleSpeech}
@@ -136,7 +155,10 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
         >
           {msg.imageUrl && (
             <div className="relative rounded-xl overflow-hidden mb-1 border border-white/20 shadow-sm">
-              <img src={msg.imageUrl} alt="Uploaded attachment" className="max-w-full h-auto max-h-64 object-contain" />
+              <img src={msg.imageUrl} 
+              alt="Uploaded image" 
+              className="rounded-xl max-w-sm max-h-80 object-cover cursor-pointer hover:opacity-90 transition" 
+            />
             </div>
           )}
           
@@ -146,22 +168,11 @@ export default function ChatMessage({ msg, activeTheme }: Props) {
              </div>
           )}
 
-          {isUser ? (
-             displayText || null 
-          ) : (
-            <div className="prose dark:prose-invert prose-p:leading-relaxed max-w-none text-gray-800 dark:text-gray-100">
-              <ReactMarkdown 
-                components={{
-                  p: ({node, ...props}) => <p className="mb-3 last:mb-0" {...props} />,
-                  ul: ({node, ...props}) => <ul className="list-disc ml-4 mb-3 space-y-1" {...props} />,
-                  ol: ({node, ...props}) => <ol className="list-decimal ml-4 mb-3 space-y-1" {...props} />,
-                  strong: ({node, ...props}) => <strong className="font-semibold text-inherit dark:text-white" {...props} />
-                }}
-              >
-                {msg.content}
-              </ReactMarkdown>
-            </div>
-          )}
+          <div className="chat-bubble prose dark:prose-invert max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {displayText}
+            </ReactMarkdown>
+          </div>
         </div>
       </div>
     </div>
