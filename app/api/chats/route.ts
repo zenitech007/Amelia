@@ -1,106 +1,53 @@
-import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { generateAIResponseWithMemory } from "@/lib/ai";
+import { NextResponse } from 'next/server';
+import { prisma } from '../../../lib/prisma';
 
-// --- CREATE NEW CHAT ---
-export async function POST(req: Request) {
-  try {
-    const { title, firstMessage, role, userId, email } = await req.json();
-
-    if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
-    if (!firstMessage) return NextResponse.json({ error: "Missing first message" }, { status: 400 });
-
-    // Ensure user exists
-    const user = await prisma.user.upsert({
-      where: { id: userId },
-      update: {},
-      create: { id: userId, email: email || "unknown@email.com" },
-    });
-
-    const chat = await prisma.chat.create({
-      data: {
-        title,
-        userId: user.id,
-        messages: { create: { role, content: firstMessage } },
-      },
-      include: { messages: true },
-    });
-
-    const aiResponse = await generateAIResponseWithMemory(userId, firstMessage);
-
-    await prisma.message.create({
-      data: { chatId: chat.id, role: "assistant", content: aiResponse },
-    });
-
-    return NextResponse.json({ chat, aiResponse });
-  } catch (error) {
-    console.error("Error creating chat:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
-}
-
-// --- APPEND MESSAGE TO EXISTING CHAT ---
-export async function PUT(req: Request) {
-  try {
-    const { chatId, role, content, imageUrl } = await req.json();
-    if (!chatId) return NextResponse.json({ error: "Missing chatId" }, { status: 400 });
-
-    const message = await prisma.message.create({ data: { chatId, role, content, imageUrl } });
-    return NextResponse.json(message);
-  } catch (error) {
-    console.error("Error saving message:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
-}
-
-// --- GET ALL CHATS FOR USER ---
+// GET all chats for the logged-in user
 export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const userId = url.searchParams.get("userId");
-    if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  const { searchParams } = new URL(req.url);
+  const userId = searchParams.get('userId');
 
-    const chats = await prisma.chat.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      include: { messages: true },
-    });
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    return NextResponse.json(chats);
-  } catch (error) {
-    console.error("Error fetching chats:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
+  const chats = await prisma.chat.findMany({
+    where: { userId: userId },
+    orderBy: { createdAt: 'desc' },
+  });
+  return NextResponse.json(chats);
 }
 
-// --- PATCH: Update chat metadata (title, pinned) ---
-export async function PATCH(req: Request) {
-  try {
-    const { chatId, title, isPinned } = await req.json();
-    if (!chatId) return NextResponse.json({ error: "Missing chatId" }, { status: 400 });
+// POST a new chat linked to the user
+export async function POST(req: Request) {
+  const { title, firstMessage, role, userId, email } = await req.json();
+  
+  // 1. Ensure the user exists in our public User table (Syncs with Supabase Auth)
+  const user = await prisma.user.upsert({
+    where: { id: userId },
+    update: {},
+    create: { id: userId, email: email || 'unknown@email.com' }
+  });
 
-    const updated = await prisma.chat.update({
-      where: { id: chatId },
-      data: { ...(title && { title }), ...(typeof isPinned === "boolean" && { isPinned }) },
-    });
-
-    return NextResponse.json(updated);
-  } catch (error) {
-    console.error("Error updating chat:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
+  // 2. Create the chat and link it to their User ID
+  const chat = await prisma.chat.create({
+    data: {
+      title,
+      userId: user.id,
+      messages: {
+        create: { role, content: firstMessage }
+      }
+    },
+    include: { messages: true }
+  });
+  
+  return NextResponse.json(chat);
 }
 
-// --- DELETE A CHAT ---
-export async function DELETE(req: Request) {
-  try {
-    const { chatId } = await req.json();
-    if (!chatId) return NextResponse.json({ error: "Missing chatId" }, { status: 400 });
-
-    await prisma.chat.delete({ where: { id: chatId } });
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Error deleting chat:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
-  }
+// PUT (Update) a chat with a new message
+export async function PUT(req: Request) {
+  const { chatId, role, content } = await req.json();
+  
+  const message = await prisma.message.create({
+    data: { chatId, role, content }
+  });
+  
+  return NextResponse.json(message);
 }
